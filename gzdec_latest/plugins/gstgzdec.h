@@ -1,5 +1,5 @@
 /* GStreamer
- * Copyright (C) 2021 FIXME <fixme@example.com>
+ * Copyright (C) 2021 Carlos Falgueras García <carlosfg@riseup.net>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -20,28 +20,30 @@
 #ifndef _GST_GZDEC_H_
 #define _GST_GZDEC_H_
 
-#include <gst/base/gstbasetransform.h>
+#include <gst/gst.h>
 
 G_BEGIN_DECLS
 
-#define GST_TYPE_GZDEC   (gst_gzdec_get_type())
-#define GST_GZDEC(obj)   (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_GZDEC,GstGzdec))
-#define GST_GZDEC_CLASS(klass)   (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_GZDEC,GstGzdecClass))
-#define GST_IS_GZDEC(obj)   (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_GZDEC))
-#define GST_IS_GZDEC_CLASS(obj)   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_GZDEC))
+#define GST_TYPE_GZDEC          (gst_gzdec_get_type ())
+#define GST_GZDEC(obj)          (G_TYPE_CHECK_INSTANCE_CAST ((obj), GST_TYPE_GZDEC, GstGzdec))
+#define GST_GZDEC_CLASS(klass)  (G_TYPE_CHECK_CLASS_CAST ((klass), GST_TYPE_GZDEC, GstGzdecClass))
+#define GST_IS_GZDEC(obj)       (G_TYPE_CHECK_INSTANCE_TYPE ((obj), GST_TYPE_GZDEC))
+#define GST_IS_GZDEC_CLASS(obj) (G_TYPE_CHECK_CLASS_TYPE ((klass), GST_TYPE_GZDEC))
 
 typedef struct _GstGzdec GstGzdec;
 typedef struct _GstGzdecClass GstGzdecClass;
 
 struct _GstGzdec
 {
-  GstBaseTransform base_gzdec;
+  GstElement element;
 
+  GstPad *sinkpad;
+  GstPad *srcpad;
 };
 
 struct _GstGzdecClass
 {
-  GstBaseTransformClass base_gzdec_class;
+  GstElementClass parent_class;
 };
 
 GType gst_gzdec_get_type (void);

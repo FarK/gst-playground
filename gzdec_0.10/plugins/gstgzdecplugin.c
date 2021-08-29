@@ -1,6 +1,6 @@
 /*
  * GStreamer
- * Copyright (C) 2021 FIXME <fixme@example.com>
+ * Copyright (C) 2021 Carlos Falgueras García <carlosfg@riseup.net>
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -56,5 +56,14 @@ plugin_init (GstPlugin * plugin)
   return TRUE;
 }
 
-GST_PLUGIN_DEFINE (GST_VERSION_MAJOR, GST_VERSION_MINOR, "gzdec", "FIXME Template plugin", plugin_init, VERSION, "LGPL",        /* FIXME */
-    "GStreamer", "http://gstreamer.net/")
+GST_PLUGIN_DEFINE (
+    GST_VERSION_MAJOR,
+    GST_VERSION_MINOR,
+    "gzdec",
+    "gzdec plugin for gzip/bzip stream decompression",
+    plugin_init,
+    VERSION,
+    "LGPL",
+    "GStreamer",
+    "http://gstreamer.net/"
+)

@@ -1,5 +1,5 @@
 /* GStreamer
- * Copyright (C) 2021 FIXME <fixme@example.com>
+ * Copyright (C) 2021 Carlos Falgueras García <carlosfg@riseup.net>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -19,14 +19,19 @@
 /**
  * SECTION:element-gstgzdec
  *
- * The gzdec element does FIXME stuff.
+ * The gzdec element decompress gzip/bzip streams
  *
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch -v fakesrc ! gzdec ! FIXME ! fakesink
+ * gst-launch-0.10 filesrc location=file.txt.gz ! 'application/x-gzip' ! gzdec ! filesink location=file.txt
  * ]|
- * FIXME Describe what the pipeline does.
+ * This pipeline decompress the file file.txt.gz into file.txt using zlib
+ *
+ * |[
+ * gst-launch-0.10 filesrc location=file.txt.bz ! 'application/x-bzip' ! gzdec ! filesink location=file.txt
+ * ]|
+ * This pipeline decompress the file file.txt.bz into file.txt using bzlib2
  * </refsect2>
  */
 
@@ -35,52 +40,19 @@
 #endif
 
 #include <gst/gst.h>
-#include <gst/base/gstbasetransform.h>
+#include <gst/gst.h>
 #include "gstgzdec.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_gzdec_debug_category);
 #define GST_CAT_DEFAULT gst_gzdec_debug_category
 
-/* prototypes */
-
-
 static void gst_gzdec_set_property (GObject * object,
     guint property_id, const GValue * value, GParamSpec * pspec);
 static void gst_gzdec_get_property (GObject * object,
     guint property_id, GValue * value, GParamSpec * pspec);
-static void gst_gzdec_dispose (GObject * object);
-static void gst_gzdec_finalize (GObject * object);
 
-static GstCaps *gst_gzdec_transform_caps (GstBaseTransform * trans,
-    GstPadDirection direction, GstCaps * caps);
-static void
-gst_gzdec_fixate_caps (GstBaseTransform * trans,
-    GstPadDirection direction, GstCaps * caps, GstCaps * othercaps);
-static gboolean
-gst_gzdec_transform_size (GstBaseTransform * trans,
-    GstPadDirection direction,
-    GstCaps * caps, guint size, GstCaps * othercaps, guint * othersize);
-static gboolean
-gst_gzdec_get_unit_size (GstBaseTransform * trans, GstCaps * caps,
-    guint * size);
-static gboolean
-gst_gzdec_set_caps (GstBaseTransform * trans, GstCaps * incaps,
-    GstCaps * outcaps);
-static gboolean gst_gzdec_start (GstBaseTransform * trans);
-static gboolean gst_gzdec_stop (GstBaseTransform * trans);
-static gboolean gst_gzdec_event (GstBaseTransform * trans, GstEvent * event);
-static GstFlowReturn
-gst_gzdec_transform (GstBaseTransform * trans, GstBuffer * inbuf,
-    GstBuffer * outbuf);
-static GstFlowReturn
-gst_gzdec_transform_ip (GstBaseTransform * trans, GstBuffer * buf);
-static GstFlowReturn
-gst_gzdec_prepare_output_buffer (GstBaseTransform * trans,
-    GstBuffer * input, gint size, GstCaps * caps, GstBuffer ** buf);
-static gboolean
-gst_gzdec_src_event (GstBaseTransform * trans, GstEvent * event);
-static void
-gst_gzdec_before_transform (GstBaseTransform * trans, GstBuffer * buffer);
+static GstFlowReturn gst_gzdec_sink_chain (GstPad * pad, GstBuffer * buffer);
+
 
 enum
 {
@@ -93,7 +65,7 @@ static GstStaticPadTemplate gst_gzdec_sink_template =
 GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("application/unknown")
+    GST_STATIC_CAPS ("application/x-gzip; application/x-bzip")
     );
 
 static GstStaticPadTemplate gst_gzdec_src_template =
@@ -108,10 +80,10 @@ GST_STATIC_PAD_TEMPLATE ("src",
 
 #define DEBUG_INIT(bla) \
   GST_DEBUG_CATEGORY_INIT (gst_gzdec_debug_category, "gzdec", 0, \
-      "debug category for gzdec element");
+      "gzdec element");
 
-GST_BOILERPLATE_FULL (GstGzdec, gst_gzdec, GstBaseTransform,
-    GST_TYPE_BASE_TRANSFORM, DEBUG_INIT);
+GST_BOILERPLATE_FULL (GstGzdec, gst_gzdec, GstElement, GST_TYPE_ELEMENT,
+    DEBUG_INIT);
 
 static void
 gst_gzdec_base_init (gpointer g_class)
@@ -123,41 +95,19 @@ gst_gzdec_base_init (gpointer g_class)
   gst_element_class_add_static_pad_template (element_class,
       &gst_gzdec_src_template);
 
-  gst_element_class_set_details_simple (element_class, "FIXME Long name",
-      "Generic", "FIXME Description", "FIXME <fixme@example.com>");
+  gst_element_class_set_details_simple (element_class,
+      "gzip decoder", "Generic", "gzip/bzip decoder",
+      "Carlos Falgueras García <carlosfg@riseup.net");
 }
 
 static void
 gst_gzdec_class_init (GstGzdecClass * klass)
 {
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
-  GstBaseTransformClass *base_transform_class =
-      GST_BASE_TRANSFORM_CLASS (klass);
+  GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
 
   gobject_class->set_property = gst_gzdec_set_property;
   gobject_class->get_property = gst_gzdec_get_property;
-  gobject_class->dispose = gst_gzdec_dispose;
-  gobject_class->finalize = gst_gzdec_finalize;
-  base_transform_class->transform_caps =
-      GST_DEBUG_FUNCPTR (gst_gzdec_transform_caps);
-  base_transform_class->fixate_caps = GST_DEBUG_FUNCPTR (gst_gzdec_fixate_caps);
-  base_transform_class->transform_size =
-      GST_DEBUG_FUNCPTR (gst_gzdec_transform_size);
-  base_transform_class->get_unit_size =
-      GST_DEBUG_FUNCPTR (gst_gzdec_get_unit_size);
-  base_transform_class->set_caps = GST_DEBUG_FUNCPTR (gst_gzdec_set_caps);
-  base_transform_class->start = GST_DEBUG_FUNCPTR (gst_gzdec_start);
-  base_transform_class->stop = GST_DEBUG_FUNCPTR (gst_gzdec_stop);
-  base_transform_class->event = GST_DEBUG_FUNCPTR (gst_gzdec_event);
-  base_transform_class->transform = GST_DEBUG_FUNCPTR (gst_gzdec_transform);
-  base_transform_class->transform_ip =
-      GST_DEBUG_FUNCPTR (gst_gzdec_transform_ip);
-  base_transform_class->prepare_output_buffer =
-      GST_DEBUG_FUNCPTR (gst_gzdec_prepare_output_buffer);
-  base_transform_class->src_event = GST_DEBUG_FUNCPTR (gst_gzdec_src_event);
-  base_transform_class->before_transform =
-      GST_DEBUG_FUNCPTR (gst_gzdec_before_transform);
-
 }
 
 static void
@@ -166,16 +116,22 @@ gst_gzdec_init (GstGzdec * gzdec, GstGzdecClass * gzdec_class)
 
   gzdec->sinkpad = gst_pad_new_from_static_template (&gst_gzdec_sink_template,
       "sink");
+  gst_pad_set_chain_function (gzdec->sinkpad,
+      GST_DEBUG_FUNCPTR (gst_gzdec_sink_chain));
+  gst_element_add_pad (GST_ELEMENT (gzdec), gzdec->sinkpad);
 
   gzdec->srcpad = gst_pad_new_from_static_template (&gst_gzdec_src_template,
       "src");
+  gst_element_add_pad (GST_ELEMENT (gzdec), gzdec->srcpad);
 }
 
 void
 gst_gzdec_set_property (GObject * object, guint property_id,
     const GValue * value, GParamSpec * pspec)
 {
-  /* GstGzdec *gzdec = GST_GZDEC (object); */
+  GstGzdec *gzdec = GST_GZDEC (object);
+
+  GST_DEBUG_OBJECT (gzdec, "set_property");
 
   switch (property_id) {
     default:
@@ -188,7 +144,9 @@ void
 gst_gzdec_get_property (GObject * object, guint property_id,
     GValue * value, GParamSpec * pspec)
 {
-  /* GstGzdec *gzdec = GST_GZDEC (object); */
+  GstGzdec *gzdec = GST_GZDEC (object);
+
+  GST_DEBUG_OBJECT (gzdec, "set_property");
 
   switch (property_id) {
     default:
@@ -197,126 +155,25 @@ gst_gzdec_get_property (GObject * object, guint property_id,
   }
 }
 
-void
-gst_gzdec_dispose (GObject * object)
-{
-  /* GstGzdec *gzdec = GST_GZDEC (object); */
-
-  /* clean up as possible.  may be called multiple times */
-
-  G_OBJECT_CLASS (parent_class)->dispose (object);
-}
-
-void
-gst_gzdec_finalize (GObject * object)
-{
-  /* GstGzdec *gzdec = GST_GZDEC (object); */
-
-  /* clean up object here */
-
-  G_OBJECT_CLASS (parent_class)->finalize (object);
-}
-
-
-static GstCaps *
-gst_gzdec_transform_caps (GstBaseTransform * trans,
-    GstPadDirection direction, GstCaps * caps)
-{
-
-  return NULL;
-}
-
-static void
-gst_gzdec_fixate_caps (GstBaseTransform * trans,
-    GstPadDirection direction, GstCaps * caps, GstCaps * othercaps)
-{
-
-}
-
-static gboolean
-gst_gzdec_transform_size (GstBaseTransform * trans,
-    GstPadDirection direction,
-    GstCaps * caps, guint size, GstCaps * othercaps, guint * othersize)
-{
-
-  return FALSE;
-}
-
-static gboolean
-gst_gzdec_get_unit_size (GstBaseTransform * trans, GstCaps * caps, guint * size)
-{
-
-  return FALSE;
-}
-
-static gboolean
-gst_gzdec_set_caps (GstBaseTransform * trans, GstCaps * incaps,
-    GstCaps * outcaps)
-{
-
-  return FALSE;
-}
-
-static gboolean
-gst_gzdec_start (GstBaseTransform * trans)
-{
-
-  return FALSE;
-}
-
-static gboolean
-gst_gzdec_stop (GstBaseTransform * trans)
-{
-
-  return FALSE;
-}
-
-static gboolean
-gst_gzdec_event (GstBaseTransform * trans, GstEvent * event)
-{
-
-  return FALSE;
-}
-
 static GstFlowReturn
-gst_gzdec_transform (GstBaseTransform * trans, GstBuffer * inbuf,
-    GstBuffer * outbuf)
+gst_gzdec_sink_chain (GstPad * pad, GstBuffer * buffer)
 {
+  GstFlowReturn ret;
+  GstGzdec *gzdec;
 
-  return GST_FLOW_ERROR;
+  gzdec = GST_GZDEC (gst_pad_get_parent (pad));
+
+  GST_DEBUG_OBJECT (gzdec, "chain");
+
+  ret = gst_pad_push (gzdec->srcpad, buffer);
+
+  gst_object_unref (gzdec);
+  return ret;
 }
 
-static GstFlowReturn
-gst_gzdec_transform_ip (GstBaseTransform * trans, GstBuffer * buf)
-{
-
-  return GST_FLOW_ERROR;
-}
-
-static GstFlowReturn
-gst_gzdec_prepare_output_buffer (GstBaseTransform * trans,
-    GstBuffer * input, gint size, GstCaps * caps, GstBuffer ** buf)
-{
-
-  return GST_FLOW_ERROR;
-}
-
-static gboolean
-gst_gzdec_src_event (GstBaseTransform * trans, GstEvent * event)
-{
-
-  return FALSE;
-}
-
-static void
-gst_gzdec_before_transform (GstBaseTransform * trans, GstBuffer * buffer)
-{
-
-}
 
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
-
   return gst_element_register (plugin, "gzdec", GST_RANK_NONE, GST_TYPE_GZDEC);
 }
