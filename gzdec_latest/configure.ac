@@ -39,6 +39,8 @@ PKG_CHECK_MODULES(GST, [
   ])
 ])
 
+PKG_CHECK_MODULES(XZLIB, [zlib, bzip2])
+
 dnl set the plugindir where plugins should be installed (for plugins/Makefile.am)
 if test "x${prefix}" = "x$HOME"; then
   plugindir="$HOME/.gstreamer-1.0/plugins"
