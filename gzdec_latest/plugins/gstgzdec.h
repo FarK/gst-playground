@@ -51,6 +51,7 @@ struct _GstGzdec
     bz_stream bzstrm;
   };
 
+  gboolean xz_initialized;
   gboolean new_out_buf;
   size_t out_buf_capacity;
   void (*xz_free) (GstGzdec * gzdec);

@@ -52,6 +52,8 @@ static void gst_gzdec_set_property (GObject * object,
     guint property_id, const GValue * value, GParamSpec * pspec);
 static void gst_gzdec_get_property (GObject * object,
     guint property_id, GValue * value, GParamSpec * pspec);
+static void gst_gzdec_state_changed (GstElement * element, GstState oldstate,
+    GstState newstate, GstState pending);
 
 static GstFlowReturn gst_gzdec_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buffer);
@@ -127,6 +129,7 @@ gst_gzdec_class_init (GstGzdecClass * klass)
 
   gobject_class->set_property = gst_gzdec_set_property;
   gobject_class->get_property = gst_gzdec_get_property;
+  gstelement_class->state_changed = gst_gzdec_state_changed;
 }
 
 static void
@@ -147,6 +150,7 @@ gst_gzdec_init (GstGzdec * gzdec)
   gst_element_add_pad (GST_ELEMENT (gzdec), gzdec->srcpad);
 
   gzdec->new_out_buf = TRUE;    // Force output buffer allocation at init
+  gzdec->xz_initialized = FALSE;
 }
 
 void
@@ -176,6 +180,17 @@ gst_gzdec_get_property (GObject * object, guint property_id,
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
+  }
+}
+
+static void
+gst_gzdec_state_changed (GstElement * element, GstState oldstate,
+    GstState newstate, GstState pending)
+{
+  GstGzdec *gzdec = GST_GZDEC (element);
+
+  if ((newstate == GST_STATE_NULL) && (gzdec->xz_initialized)) {
+    gzdec->xz_free (gzdec);
   }
 }
 
@@ -332,6 +347,7 @@ xzlib_init (GstGzdec * gzdec, int type)
 
     zlib_init (gzdec);
   }
+  gzdec->xz_initialized = TRUE;
 }
 
 static int
