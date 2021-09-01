@@ -304,6 +304,11 @@ gst_gzdec_event (GstPad * pad, GstObject * parent, GstEvent * event)
 
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_CAPS:
+      if (gzdec->xz_initialized) {
+        GST_DEBUG_OBJECT (gzdec, "Dynamic caps change not supported");
+        goto beach;
+      }
+
       gst_event_parse_caps (event, &caps);
       GST_DEBUG_OBJECT (gzdec, "setcaps %" GST_PTR_FORMAT, caps);
       structure = gst_caps_get_structure (caps, 0);
@@ -317,14 +322,16 @@ gst_gzdec_event (GstPad * pad, GstObject * parent, GstEvent * event)
         lib = XZ_BZLIB;
       } else {
         GST_DEBUG_OBJECT (gzdec, "Invalid caps");
-        gst_event_unref (event);
-        return FALSE;
+        goto beach;
       }
       xzlib_init (gzdec, lib);
       break;
   };
 
   return gst_pad_event_default (pad, parent, event);
+beach:
+  gst_event_unref (event);
+  return FALSE;
 }
 
 static void
