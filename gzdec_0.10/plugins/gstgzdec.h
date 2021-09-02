@@ -21,6 +21,8 @@
 #define _GST_GZDEC_H_
 
 #include <gst/gst.h>
+#include <zlib.h>
+#include <bzlib.h>
 
 G_BEGIN_DECLS
 
@@ -39,6 +41,24 @@ struct _GstGzdec
 
   GstPad *sinkpad;
   GstPad *srcpad;
+
+  GstBuffer *out_buf;
+  GstPadSetCapsFunction default_setcaps;
+
+  union
+  {
+    z_stream zstrm;
+    bz_stream bzstrm;
+  };
+
+  gboolean xz_initialized;
+  gboolean new_out_buf;
+  size_t out_buf_capacity;
+  void (*xz_free) (GstGzdec * gzdec);
+  void (*xz_prepare_in_buffer) (GstGzdec * gzdec, void *buf, size_t len);
+  void (*xz_prepare_out_buffer) (GstGzdec * gzdec, void *buf, size_t len);
+  size_t (*xz_out_buffer_size) (GstGzdec * gzdec);
+  int (*xz_uncompress_step) (GstGzdec * gzdec);
 };
 
 struct _GstGzdecClass

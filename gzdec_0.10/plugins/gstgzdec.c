@@ -50,8 +50,11 @@ static void gst_gzdec_set_property (GObject * object,
     guint property_id, const GValue * value, GParamSpec * pspec);
 static void gst_gzdec_get_property (GObject * object,
     guint property_id, GValue * value, GParamSpec * pspec);
+static void gst_gzdec_state_changed (GstElement * element, GstState oldstate,
+    GstState newstate, GstState pending);
 
 static GstFlowReturn gst_gzdec_sink_chain (GstPad * pad, GstBuffer * buffer);
+static gboolean gst_gzdec_sink_setcaps (GstPad * pad, GstCaps * caps);
 
 
 enum
@@ -85,6 +88,35 @@ GST_STATIC_PAD_TEMPLATE ("src",
 GST_BOILERPLATE_FULL (GstGzdec, gst_gzdec, GstElement, GST_TYPE_ELEMENT,
     DEBUG_INIT);
 
+/* (b)zlib auxiliary methods */
+#define XZ_ZLIB         0
+#define XZ_BZLIB        1
+#define XZ_ERROR        (1 << 0)
+#define XZ_MORE_OUTPUT  (1 << 1)
+#define XZ_CONTINUE     (1 << 2)
+#define XZ_FINISH       (1 << 3)
+#define XZ_MORE_INPUT   (1 << 4)
+
+static void xzlib_init (GstGzdec * gzdec, int type);
+
+static int zlib_init (GstGzdec * gzdec);
+static void zlib_prepare_in_buffer (GstGzdec * gzdec, void *buf, size_t len);
+static void zlib_prepare_out_buffer (GstGzdec * gzdec, void *buf, size_t len);
+static size_t zlib_out_buffer_size (GstGzdec * gzdec);
+static int zlib_uncompress_step (GstGzdec * gzdec);
+static void zlib_free (GstGzdec * gzdec);
+
+static int bzlib_init (GstGzdec * gzdec);
+static void bzlib_prepare_in_buffer (GstGzdec * gzdec, void *buf, size_t len);
+static void bzlib_prepare_out_buffer (GstGzdec * gzdec, void *buf, size_t len);
+static size_t bzlib_out_buffer_size (GstGzdec * gzdec);
+static int bzlib_uncompress_step (GstGzdec * gzdec);
+static void bzlib_free (GstGzdec * gzdec);
+
+static gboolean prepare_out_buffer (GstGzdec * gzdec, size_t in_buf_size);
+static GstFlowReturn push_out_buf (GstGzdec * gzdec);
+
+
 static void
 gst_gzdec_base_init (gpointer g_class)
 {
@@ -108,6 +140,8 @@ gst_gzdec_class_init (GstGzdecClass * klass)
 
   gobject_class->set_property = gst_gzdec_set_property;
   gobject_class->get_property = gst_gzdec_get_property;
+
+  element_class->state_changed = gst_gzdec_state_changed;
 }
 
 static void
@@ -118,11 +152,18 @@ gst_gzdec_init (GstGzdec * gzdec, GstGzdecClass * gzdec_class)
       "sink");
   gst_pad_set_chain_function (gzdec->sinkpad,
       GST_DEBUG_FUNCPTR (gst_gzdec_sink_chain));
+  // Save the default setcaps function. We'll use it later
+  gzdec->default_setcaps = GST_PAD_ACCEPTCAPSFUNC (gzdec->sinkpad);
+  gst_pad_set_setcaps_function (gzdec->sinkpad,
+      GST_DEBUG_FUNCPTR (gst_gzdec_sink_setcaps));
   gst_element_add_pad (GST_ELEMENT (gzdec), gzdec->sinkpad);
 
   gzdec->srcpad = gst_pad_new_from_static_template (&gst_gzdec_src_template,
       "src");
   gst_element_add_pad (GST_ELEMENT (gzdec), gzdec->srcpad);
+
+  gzdec->new_out_buf = TRUE;    // Force output buffer allocation at init
+  gzdec->xz_initialized = FALSE;
 }
 
 void
@@ -155,25 +196,293 @@ gst_gzdec_get_property (GObject * object, guint property_id,
   }
 }
 
-static GstFlowReturn
-gst_gzdec_sink_chain (GstPad * pad, GstBuffer * buffer)
+static void
+gst_gzdec_state_changed (GstElement * element, GstState oldstate,
+    GstState newstate, GstState pending)
 {
-  GstFlowReturn ret;
-  GstGzdec *gzdec;
+  GstGzdec *gzdec = GST_GZDEC (element);
 
-  gzdec = GST_GZDEC (gst_pad_get_parent (pad));
+  if ((newstate == GST_STATE_NULL) && (gzdec->xz_initialized)) {
+    gzdec->xz_free (gzdec);
+  }
+}
 
-  GST_DEBUG_OBJECT (gzdec, "chain");
+static gboolean
+prepare_out_buffer (GstGzdec * gzdec, size_t in_buf_size)
+{
+  if (!gzdec->new_out_buf)
+    return TRUE;
 
-  ret = gst_pad_push (gzdec->srcpad, buffer);
+  GST_DEBUG_OBJECT (gzdec, "Allocate new output buffer");
+  gzdec->out_buf_capacity = in_buf_size;
+  gzdec->out_buf = gst_buffer_new_and_alloc (gzdec->out_buf_capacity);
 
+  if (!gzdec->out_buf)
+    return FALSE;
+
+  gzdec->new_out_buf = FALSE;
+
+  gzdec->xz_prepare_out_buffer (gzdec,
+      gzdec->out_buf->malloc_data, gzdec->out_buf->size);
+
+  return TRUE;
+}
+
+static GstFlowReturn
+push_out_buf (GstGzdec * gzdec)
+{
+  gzdec->out_buf->size = gzdec->xz_out_buffer_size (gzdec);
+  gzdec->new_out_buf = TRUE;
+  return gst_pad_push (gzdec->srcpad, gzdec->out_buf);
+}
+
+static GstFlowReturn
+gst_gzdec_sink_chain (GstPad * pad, GstBuffer * in_buf)
+{
+  GstGzdec *gzdec = GST_GZDEC (gst_pad_get_parent (pad));
+  GstFlowReturn ret = GST_FLOW_ERROR;
+  GstEvent *eos;
+  int xz_ret;
+
+  GST_DEBUG_OBJECT (gzdec, "New input buffer");
+  gzdec->xz_prepare_in_buffer (gzdec, in_buf->malloc_data, in_buf->size);
+
+  // Keep decompressing and pushing buffers until finish, error or input exhaust
+  do {
+    // Allocate new output buffer if necessary
+    if (!prepare_out_buffer (gzdec, in_buf->size))
+      goto free_in;
+
+    // Uncompress until error, input exhaust, output full or finish
+    GST_DEBUG_OBJECT (gzdec, "Uncompress step");
+    xz_ret = gzdec->xz_uncompress_step (gzdec);
+
+    if (xz_ret & XZ_ERROR)
+      goto free_out;
+
+    // Output buffer is full, push it and continue
+    if (xz_ret & XZ_MORE_OUTPUT) {
+      GST_DEBUG_OBJECT (gzdec, "Out buffer ready. Push it");
+      ret = push_out_buf (gzdec);
+      if (ret < 0)
+        goto free_in;
+    }
+
+    if (xz_ret & XZ_FINISH) {
+      GST_DEBUG_OBJECT (gzdec, "Decompression finish. Send EOS");
+      eos = gst_event_new_eos ();
+      gst_pad_push_event (gzdec->srcpad, eos);
+      ret = GST_FLOW_UNEXPECTED;
+      goto free_in;
+    }
+  } while (!(xz_ret & XZ_MORE_INPUT));
+
+  ret = GST_FLOW_OK;
+  goto free_in;
+
+free_out:
+  gst_buffer_unref (gzdec->out_buf);
+free_in:
+  gst_buffer_unref (in_buf);
   gst_object_unref (gzdec);
   return ret;
 }
 
+static gboolean
+gst_gzdec_sink_setcaps (GstPad * pad, GstCaps * caps)
+{
+  GstGzdec *gzdec = GST_GZDEC (gst_pad_get_parent (pad));
+  GstStructure *structure;
+  const gchar *mtype;
+  int lib;
+
+  GST_DEBUG_OBJECT (gzdec, "setcaps %" GST_PTR_FORMAT, caps);
+
+  if (!gzdec->default_setcaps (pad, caps))
+    return FALSE;
+
+  structure = gst_caps_get_structure (caps, 0);
+  mtype = gst_structure_get_name (structure);
+
+  if (g_str_equal (mtype, "application/x-gzip")) {
+    GST_DEBUG_OBJECT (gzdec, "GZIP stream");
+    lib = XZ_ZLIB;
+  } else if (g_str_equal (mtype, "application/x-bzip")) {
+    GST_DEBUG_OBJECT (gzdec, "BZIP stream");
+    lib = XZ_BZLIB;
+  } else {
+    GST_DEBUG_OBJECT (gzdec, "Invalid caps");
+    gst_object_unref (gzdec);
+    return FALSE;
+  }
+
+  xzlib_init (gzdec, lib);
+
+  gst_object_unref (gzdec);
+  return TRUE;
+}
 
 static gboolean
 plugin_init (GstPlugin * plugin)
 {
   return gst_element_register (plugin, "gzdec", GST_RANK_NONE, GST_TYPE_GZDEC);
+}
+
+static void
+xzlib_init (GstGzdec * gzdec, int type)
+{
+  if (type == XZ_BZLIB) {
+    gzdec->xz_prepare_in_buffer  = bzlib_prepare_in_buffer;
+    gzdec->xz_prepare_out_buffer = bzlib_prepare_out_buffer;
+    gzdec->xz_uncompress_step    = bzlib_uncompress_step;
+    gzdec->xz_out_buffer_size    = bzlib_out_buffer_size;
+    gzdec->xz_free               = bzlib_free;
+
+    bzlib_init (gzdec);
+  } else {
+    gzdec->xz_prepare_in_buffer  = zlib_prepare_in_buffer;
+    gzdec->xz_prepare_out_buffer = zlib_prepare_out_buffer;
+    gzdec->xz_uncompress_step    = zlib_uncompress_step;
+    gzdec->xz_out_buffer_size    = zlib_out_buffer_size;
+    gzdec->xz_free               = zlib_free;
+
+    zlib_init (gzdec);
+  }
+  gzdec->xz_initialized = TRUE;
+}
+
+static int
+zlib_init (GstGzdec * gzdec)
+{
+  GST_DEBUG_OBJECT (gzdec, "zlib init");
+  gzdec->zstrm.next_in   = Z_NULL;
+  gzdec->zstrm.avail_in  = 0;
+  gzdec->zstrm.next_out  = Z_NULL;
+  gzdec->zstrm.avail_out = 0;
+  gzdec->zstrm.zalloc    = NULL;
+  gzdec->zstrm.zfree     = NULL;
+
+  return inflateInit2 (&gzdec->zstrm, MAX_WBITS + 16);
+}
+
+static void
+zlib_prepare_in_buffer (GstGzdec * gzdec, void *buf, size_t len)
+{
+  gzdec->zstrm.next_in  = buf;
+  gzdec->zstrm.avail_in = len;
+}
+
+static void
+zlib_prepare_out_buffer (GstGzdec * gzdec, void *buf, size_t len)
+{
+  gzdec->zstrm.next_out  = buf;
+  gzdec->zstrm.avail_out = len;
+}
+
+static size_t
+zlib_out_buffer_size (GstGzdec * gzdec)
+{
+  return gzdec->out_buf_capacity - gzdec->zstrm.avail_out;
+}
+
+static int
+zlib_uncompress_step (GstGzdec * gzdec)
+{
+  int ret;
+  int err;
+
+  ret = 0;
+
+  err = inflate (&gzdec->zstrm, Z_SYNC_FLUSH);
+  if ((err < 0) && (err != Z_BUF_ERROR)) {
+    GST_DEBUG_OBJECT (gzdec, "Uncompress error: \"%s\"\n", zError (err));
+    if (gzdec->zstrm.msg)
+      GST_DEBUG_OBJECT (gzdec, "%s\n", gzdec->zstrm.msg);
+    return XZ_ERROR;
+  }
+
+  if (err == Z_STREAM_END) {
+    ret |= XZ_FINISH;
+    if (gzdec->zstrm.avail_out > 0)
+      ret |= XZ_MORE_OUTPUT;
+  }
+  if (gzdec->zstrm.avail_out == 0)
+    ret |= XZ_MORE_OUTPUT;
+  if (gzdec->zstrm.avail_in == 0)
+    ret |= XZ_MORE_INPUT;
+
+  return ret;
+}
+
+static void
+zlib_free (GstGzdec * gzdec)
+{
+  GST_DEBUG_OBJECT (gzdec, "zlib free");
+  inflateEnd (&gzdec->zstrm);
+}
+
+static int
+bzlib_init (GstGzdec * gzdec)
+{
+  GST_DEBUG_OBJECT (gzdec, "bzlib init");
+  gzdec->bzstrm.next_in   = NULL;
+  gzdec->bzstrm.avail_in  = 0;
+  gzdec->bzstrm.next_out  = NULL;
+  gzdec->bzstrm.avail_out = 0;
+  gzdec->bzstrm.bzalloc   = NULL;
+  gzdec->bzstrm.bzfree    = NULL;
+
+  return BZ2_bzDecompressInit (&gzdec->bzstrm, 0, 0);
+}
+
+static void
+bzlib_prepare_in_buffer (GstGzdec * gzdec, void *buf, size_t len)
+{
+  gzdec->bzstrm.next_in  = buf;
+  gzdec->bzstrm.avail_in = len;
+}
+
+static void
+bzlib_prepare_out_buffer (GstGzdec * gzdec, void *buf, size_t len)
+{
+  gzdec->bzstrm.next_out  = buf;
+  gzdec->bzstrm.avail_out = len;
+}
+
+static size_t
+bzlib_out_buffer_size (GstGzdec * gzdec)
+{
+  return gzdec->out_buf_capacity - gzdec->bzstrm.avail_out;
+}
+
+static int
+bzlib_uncompress_step (GstGzdec * gzdec)
+{
+  int ret = 0;
+  int err;
+
+  err = BZ2_bzDecompress (&gzdec->bzstrm);
+  if ((err != BZ_OK) && (err != BZ_STREAM_END)) {
+    GST_DEBUG_OBJECT (gzdec, "Uncompress error: \"%d\"\n", err);
+    return XZ_ERROR;
+  }
+
+  if (err == BZ_STREAM_END) {
+    ret |= XZ_FINISH;
+    if (gzdec->bzstrm.avail_out > 0)
+      ret |= XZ_MORE_OUTPUT;
+  }
+  if (gzdec->bzstrm.avail_out == 0)
+    ret |= XZ_MORE_OUTPUT;
+  if (gzdec->bzstrm.avail_in == 0)
+    ret |= XZ_MORE_INPUT;
+
+  return ret;
+}
+
+static void
+bzlib_free (GstGzdec * gzdec)
+{
+  GST_DEBUG_OBJECT (gzdec, "bzlib free");
+  BZ2_bzDecompressEnd (&gzdec->bzstrm);
 }
