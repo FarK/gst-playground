@@ -5,6 +5,7 @@
 *.lo
 *.libs
 .gdbinit
+test_file*
 
 gzdec*/**/Makefile
 Makefile.in
