@@ -39,7 +39,14 @@ PKG_CHECK_MODULES(GST, [
   ])
 ])
 
-PKG_CHECK_MODULES(XZLIB, [zlib, bzip2])
+PKG_CHECK_MODULES(ZLIB, [zlib],, AC_MSG_ERROR([zlib not found]))
+
+dnl bzlib2 don't provide pkg-config, so it if fails, try with AC_SEARCH_LIBS
+PKG_CHECK_MODULES(BZLIB, [bzip22],, [
+  AC_SEARCH_LIBS(BZ2_bzDecompressInit, [bz2],,
+   AC_MSG_ERROR([bzlib2 not found]),
+  )
+])
 
 dnl set the plugindir where plugins should be installed (for plugins/Makefile.am)
 if test "x${prefix}" = "x$HOME"; then
