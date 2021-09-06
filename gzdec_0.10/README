@@ -1,1 +1,53 @@
-README for your project.
+Gzip/Bzip2 decoder for GStreamer 0.10
+=====================================
+
+This plugins has a gzdec element that allow to decompress a string compressed in
+gzip or bzip2.
+
+How to use
+----------
+
+You need to fix the input caps to let the plugin known about the input format
+(gziz or bzip2):
+
+  gst-launch-0.10 filesrc location=file.txt.gz \
+                  ! 'application/x-gzip' \
+                  ! gzdec \
+                  ! filesink location=file.txt
+
+  gst-launch-0.10 filesrc location=file.txt.bz \
+                  ! 'application/x-bzip' \
+                  ! gzdec \
+                  ! filesink location=file.txt
+
+How to build
+------------
+
+This proyect uses autotools that will check for all its needed dependencies. But
+the more importants are:
+
+* libraries:
+  * gstreamer-0.10
+  * zlib
+  * bzlib2
+
+* toolchain:
+  * autotools
+  * make
+  * gcc
+
+The steps for build the plugins are:
+
+  > ./autogen.sh
+  > ./configure --prefix=/usr   # optional. Choose the prefix you want
+  > make
+  > make install   # optional. Will install under the prefix: /usr/bin/
+
+If you want to test it without install it, you can use the GST_PLUGIN_PATH
+variable:
+
+  GST_PLUGIN_PATH+=":${PATH}/.plugins/.libs/" gst-inspect-0.10 gzdec
+
+You can also launch the test using:
+
+  >make test
